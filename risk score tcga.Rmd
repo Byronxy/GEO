@@ -1,0 +1,394 @@
+---
+title: "TCGA-risk score plot"
+author: "Yi Xiong"
+date: "`r Sys.Date()`"
+documentclass: ctexart
+output: rticles::ctex
+---
+
+**Load required packages**
+```{r load packages}
+setwd("E:/bioinformatics")
+rm(list=ls())
+library(RTCGA)
+# source("https://bioconductor.org/biocLite.R")
+# #biocLite("RTCGA").
+# biocLite("RTCGA.clinical")
+# biocLite("RTCGA.rnaseq")
+# biocLite("RTCGA.mRNA")
+# biocLite("RTCGA.mutations")
+# biocLite("RTCGA.miRNASeq")
+
+library(survival)
+library(survminer)
+library(RTCGA.miRNASeq)
+library(RTCGA.clinical) 
+library(Hmisc)
+library(cowplot)
+library(pheatmap)
+library(clusterProfiler)
+library(RColorBrewer)
+```
+**Load required data**
+Expression data
+```{r Load required data}
+expr <- expressionsTCGA(LUAD.miRNASeq)
+dim(expr)
+expr[1:40,1:4] 
+expr=as.data.frame(expr[seq(1,nrow(expr),by=3),3:ncol(expr)])#extract read_count
+s=rownames(LUAD.miRNASeq)[seq(1,nrow(LUAD.miRNASeq),by=3)]
+mi=colnames(expr)
+expr=apply(expr,1,as.numeric) 
+colnames(expr)=s
+rownames(expr)=mi
+expr[1:4,1:4]
+expr=na.omit(expr)
+dim(expr)
+expr=expr[apply(expr, 1,function(x){sum(x>1)>10}),] #Exclude low expression miRNA
+dim(expr)
+```
+Clinical data
+```{r}
+meta <- LUAD.clinical
+tmp=as.data.frame(colnames(meta))
+
+# meta[(grepl('patient.bcr_patient_barcode',colnames(meta)))]
+# meta[(grepl('patient.days_to_last_followup',colnames(meta)))]
+# meta[(grepl('patient.days_to_death',colnames(meta)))]
+# meta[(grepl('patient.vital_status',colnames(meta)))]
+meta=as.data.frame(meta[c('patient.bcr_patient_barcode','patient.vital_status',
+                          'patient.days_to_death','patient.days_to_last_followup',
+                          'patient.race',
+                          'patient.age_at_initial_pathologic_diagnosis',
+                          'patient.gender' ,
+                          'patient.stage_event.pathologic_stage')])
+```
+**Save or Load data**
+```{r}
+# save(expr,meta,file = 'TCGA-LUAD-miRNA-example.Rdata')
+load(file = 'TCGA-LUAD-miRNA-example.Rdata')
+```
+```{r}
+group_list=ifelse(substr(colnames(expr),14,15)=='01','tumor','normal')
+table(group_list)
+```
+```{r}
+if(!file.exists('TCGA-LUAD-survival_input.Rdata')){
+  exprSet=na.omit(expr)
+  exprSet=exprSet[,group_list=='tumor']
+  
+  head(meta)
+  colnames(meta)
+  meta[,3][is.na(meta[,3])]=0
+  meta[,4][is.na(meta[,4])]=0
+  meta$days=as.numeric(meta[,3])+as.numeric(meta[,4])
+  meta=meta[,c(1:2,5:9)]
+  colnames(meta)
+  colnames(meta)=c('ID','event','race','age','gender','stage',"days") 
+  library(survival)
+  library(survminer)
+  meta$event=ifelse(meta$event=='alive',0,1)
+  meta$age=as.numeric(meta$age)
+  library(stringr) 
+  meta$stage=str_split(meta$stage,' ',simplify = T)[,2]
+  table(meta$stage)
+  boxplot(meta$age)
+  meta$age_group=ifelse(meta$age>median(meta$age,na.rm = T),'older','younger')
+  table(meta$race)
+  meta$time=meta$days/30
+  phe=meta
+  
+  head(phe)
+  phe$ID=toupper(phe$ID) 
+  phe=phe[match(substr(colnames(exprSet),1,12),phe$ID),]
+  head(phe)
+  exprSet[1:4,1:4]
+  
+  save(exprSet,phe,file='TCGA-LUAD-survival_input.Rdata')
+}
+```
+```{r}
+load(file='TCGA-LUAD-survival_input.Rdata')
+head(phe)
+exprSet[1:4,1:4]
+```
+```{r}
+e=t(exprSet[c('hsa-mir-31','hsa-mir-196b','hsa-mir-766','hsa-mir-519a-1','hsa-mir-375','hsa-mir-187','hsa-mir-331','hsa-mir-101-1'),])
+e=log2(e+1)
+colnames(e)=c('miR31','miR196b','miR766','miR519a1','miR375','miR187','miR331','miR101')
+dat=cbind(phe,e)
+```
+```{r}
+dat$gender=factor(dat$gender)
+dat$stage=factor(dat$stage)
+
+colnames(dat) 
+s=Surv(time, event) ~ miR31+miR196b+miR766+miR519a1+miR375+miR187+miR331+miR101
+model <- coxph(s, data = dat)
+summary(model,data=dat)
+options(scipen=1)
+ggforest(model, data =dat, 
+         main = "Hazard ratio", 
+         cpositions = c(0.10, 0.22, 0.4), 
+         fontsize = 1.0, 
+         refLabel = "1", noDigits = 4)
+```
+对于生存数据预后模型评价很多采用C-index ，但c-index展示没有roc曲线图来的直观
+```{r}
+new_dat=dat
+fp <- predict(model,new_dat,type="risk")
+#fp <- predict(model,new_dat,type="expected") 
+plot(fp,phe$days)
+basehaz(model) 
+library(Hmisc)
+options(scipen=200)
+with(new_dat,rcorr.cens(fp,Surv(time, event)))
+```
+ROC curve
+```{r}
+rt = new_dat
+rt = rt[c("event","days")]
+
+rt$marker = as.numeric(fp)
+library(survivalROC)
+survivalROC_helper <- function(t) {
+  survivalROC(Stime=rt$days, status=rt$event, marker = rt$marker, 
+              predict.time =t, method="KM")
+  }
+library(tidyverse)
+library(survivalROC)
+survivalROC_data <- data_frame(t = 365*c(1,3,5)) %>%
+  mutate(survivalROC = map(t, survivalROC_helper),
+         ## Extract scalar AUC
+         auc = map_dbl(survivalROC, magrittr::extract2, "AUC"),
+         ## Put cut off dependent values in a data_frame
+         df_survivalROC = map(survivalROC, function(obj) {
+           as_data_frame(obj[c("cut.values","TP","FP")])
+         })) %>%
+  dplyr::select(-survivalROC) %>%
+  unnest() %>%
+  arrange(t, FP, TP)
+survivalROC_data1 <- survivalROC_data %>% 
+  mutate(auc =sprintf("%.3f",auc))%>% 
+  unite(day, t,auc,sep = " day AUC: ")
+AUC =factor(survivalROC_data1$day)
+survivalROC_data1 %>%
+  ggplot(mapping = aes(x = FP, y = TP)) +
+  geom_path(aes(color= AUC))+
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed")+
+  theme_bw() +
+  theme(legend.position = c(0.8,0.2))
+```
+
+出图往往很简单
+```{r}
+library(cowplot)
+library(pheatmap)
+# https://cran.r-project.org/web/packages/cowplot/vignettes/introduction.html
+fp_dat=data.frame(s=1:length(fp),v=as.numeric(sort(fp )))
+sur_dat=data.frame(s=1:length(fp),
+                   t=phe[names(sort(fp )),'time'] ,
+                   e=phe[names(sort(fp )),'event']  ) 
+sur_dat$e=ifelse(sur_dat$e==0,'alive','death')
+exp_dat=new_dat[names(sort(fp)),10:17]
+plot.point=ggplot(fp_dat,aes(x=s,y=v))+geom_point()
+plot.sur=ggplot(sur_dat,aes(x=s,y=t))+geom_point(aes(col=e))
+mycolors <- colorRampPalette(c("black", "green", "red"), bias = 1.2)(100)
+tmp=t(scale(exp_dat))
+tmp[tmp > 1] = 1
+tmp[tmp < -1] = -1
+plot.h=pheatmap(tmp,col= mycolors,show_colnames = F,cluster_cols = F)
+plot_grid(plot.point, plot.sur, plot.h$gtable,
+          labels = c("A", "B","C"),
+          align = 'v',ncol = 1)
+```
+
+# Lasso regression to identify miRNA predictors
+```{r load data}
+load(file='TCGA-LUAD-survival_input.Rdata')
+head(phe)
+exprSet[1:4,1:4]
+#exprSet 整理好的miRNA表达（行：miRNA。列：样本名）
+#phe 表型数据，与exprSet对应
+```
+Identify differentially expressed miRNAs
+```{r}
+library(limma)
+exprSet=na.omit(expr)
+group_list=ifelse(substr(colnames(expr),14,15)=='01','tumor','normal')
+tumor_exprSet <- exprSet[,group_list=='tumor']
+normal_exprSet <- exprSet[,group_list=='normal']
+n_tumor = 513
+n_normal = 48
+classes = c(rep(0,n_normal), rep(1,n_tumor))
+tumortype_class <- factor(classes, levels = 0:1,
+                          labels = c("normal", "tumor"))
+#expression data
+new_exprSet <- cbind(normal_exprSet,tumor_exprSet)
+#design matrix
+design.mat <- model.matrix(~0+factor(tumortype_class))
+colnames(design.mat) <- c("normal", "tumor")
+head(design.mat)
+# contrast matrix
+contrast.mat <- makeContrasts(tumor-normal, levels = design.mat)
+contrast.mat
+#fit model
+fit <- lmFit(new_exprSet, design.mat)
+fit2 <- contrasts.fit(fit, contrast.mat)
+fit3 <- eBayes(fit2)
+summary(decideTests(fit3, adjust.method = "fdr", p.value = 0.05, lfc = log2(1.5)))
+result <- decideTests(fit3, adjust.method = "fdr", p.value = 0.05, lfc = log2(1.5))
+exprSet.expressed <- exprSet[result[,1]!=0,]
+exprSet.expressed[1:10,1:5]
+save(exprSet.expressed,phe,file='TCGA-LUAD-survival_input(DEGs).Rdata')
+```
+phenotype data
+```{r}
+meta <- LUAD.clinical
+tmp=as.data.frame(colnames(meta))
+
+# meta[(grepl('patient.bcr_patient_barcode',colnames(meta)))]
+# meta[(grepl('patient.days_to_last_followup',colnames(meta)))]
+# meta[(grepl('patient.days_to_death',colnames(meta)))]
+# meta[(grepl('patient.vital_status',colnames(meta)))]
+meta=as.data.frame(meta[c('patient.bcr_patient_barcode','patient.vital_status',
+                          'patient.days_to_death','patient.days_to_last_followup',
+                          'patient.race',
+                          'patient.age_at_initial_pathologic_diagnosis',
+                          'patient.gender' ,
+                          'patient.stage_event.pathologic_stage')])
+head(meta)
+colnames(meta)
+meta[,3][is.na(meta[,3])]=0
+meta[,4][is.na(meta[,4])]=0
+meta$days=as.numeric(meta[,3])+as.numeric(meta[,4])
+meta=meta[,c(1:2,5:9)]
+colnames(meta)
+colnames(meta)=c('ID','event','race','age','gender','stage',"days") 
+library(survival)
+library(survminer)
+meta$event=ifelse(meta$event=='alive',0,1)
+meta$age=as.numeric(meta$age)
+library(stringr) 
+meta$stage=str_split(meta$stage,' ',simplify = T)[,2]
+table(meta$stage)
+boxplot(meta$age)
+meta$age_group=ifelse(meta$age>median(meta$age,na.rm = T),'older','younger')
+table(meta$race)
+meta$time=meta$days/30
+phe=meta
+  
+head(phe)
+phe$ID=toupper(phe$ID) 
+phe=phe[match(substr(colnames(exprSet.expressed),1,12),phe$ID),]
+head(phe)
+phe_expressed = phe
+```
+Save or load data
+```{r}
+save(exprSet.expressed,phe_expressed, file = "TCGA_LUAD_expressed_survival input.Rdata")
+#load(exprSet.expressed,phe_expressed, file = "TCGA_LUAD_expressed_survival input.Rdata")
+```
+Lasso regression要求列是我们要降维的变量，即miRNA
+```{r}
+rn <- rownames(exprSet.expressed)
+rn <- substr(rn,5,nchar(rn))
+e <- exprSet.expressed
+rownames(e) <- rn
+e <- t(e)
+e = log2(e+1)
+dim(e) #561 280
+dat = cbind(e,phe_expressed)
+#time cant be zero
+new_phe = phe_expressed
+new_phe[which(phe$time==0),]$time = 1 #将最短时间改为1，因为lasso中不能为0
+```
+构造lasso regression model
+```{r}
+library(glmnet)
+library(survival)
+x <- e
+y <- data.matrix(Surv(new_phe$time,new_phe$event))
+fit <- glmnet(x,y,family = "cox", maxit = 10000)
+plot(fit)
+cv.fit <- cv.glmnet(x,y,family = "cox", maxit = 10000)
+plot(cv.fit)
+```
+select variables after lasso regression
+```{r}
+Coefficients <- coef(fit, s = cv.fit$lambda.min)
+Active.Index <- which(Coefficients!=0)
+Active.Coefficients <- Coefficients[Active.Index]
+Active.Index
+Active.Coefficients
+row.names(Coefficients)[Active.Index]
+new_e = e[,row.names(Coefficients)[Active.Index]]
+rownames(new_e) = substr(rownames(new_e),1,12)
+```
+与之前文献中筛选的结果对比，发现还是有一定的区别
+```{r}
+tmp <- c('hsa-mir-31','hsa-mir-196b','hsa-mir-766','hsa-mir-519a-1','hsa-mir-375','hsa-mir-187','hsa-mir-331','hsa-mir-101-1')
+tmp <- substr(tmp,5,nchar(tmp))
+tmp1 <- row.names(Coefficients)[Active.Index]
+intersect(tmp,tmp1) #intersection
+```
+Use lasso selected variables for predict
+```{r}
+fp <- predict(fit,e,s = cv.fit$lambda.min) # get relative risk(RR)
+names(fp) <- new_phe$ID
+boxplot(fp)
+summary(fp)
+```
+出图往往很简单
+```{r}
+fp_dat=data.frame(s=1:length(fp),v=as.numeric(sort(fp)))
+sur_dat=data.frame(s=1:length(fp),
+                   t=new_phe[match(new_phe$ID,names(sort(fp))),'time'],
+                   e=factor(new_phe[match(new_phe$ID,names(sort(fp))),'event'],levels = c(0,1),labels = c("Alive","Dead")))
+exp_dat=new_e[names(sort(fp)),]
+plot.point=ggplot(fp_dat,aes(x=s,y=v))+geom_point()+ylab("Prognositc score")
+plot.sur=ggplot(sur_dat,aes(x=s,y=t))+geom_point(aes(col=e))+ylab("survival time(months)")
+mycolors <- colorRampPalette(brewer.pal(3, "Set1"), bias = 1.2)(100)
+tmp=t(scale(exp_dat))
+tmp[tmp > 1] = 1
+tmp[tmp < -1] = -1
+plot.h=pheatmap(tmp,show_colnames = F,cluster_cols = F, cluster_rows = F, cex = 0.6)
+plot_grid(plot.point, plot.sur, plot.h$gtable,
+          labels = c("A", "B","C"),
+          align = 'v',ncol = 1)
+```
+ROC curve
+```{r}
+rt = dat
+rt = rt[c("event","days")]
+
+rt$marker = as.numeric(fp)
+library(survivalROC)
+survivalROC_helper <- function(t) {
+  survivalROC(Stime=rt$days, status=rt$event, marker = rt$marker, 
+              predict.time =t, method="KM")
+  }
+library(tidyverse)
+library(survivalROC)
+survivalROC_data <- data_frame(t = 365*c(1,3,5)) %>%
+  mutate(survivalROC = map(t, survivalROC_helper),
+         ## Extract scalar AUC
+         auc = map_dbl(survivalROC, magrittr::extract2, "AUC"),
+         ## Put cut off dependent values in a data_frame
+         df_survivalROC = map(survivalROC, function(obj) {
+           as_data_frame(obj[c("cut.values","TP","FP")])
+         })) %>%
+  dplyr::select(-survivalROC) %>%
+  unnest() %>%
+  arrange(t, FP, TP)
+survivalROC_data1 <- survivalROC_data %>% 
+  mutate(auc =sprintf("%.3f",auc))%>% 
+  unite(day, t,auc,sep = " day AUC: ")
+AUC =factor(survivalROC_data1$day)
+survivalROC_data1 %>%
+  ggplot(mapping = aes(x = FP, y = TP)) +
+  geom_path(aes(color= AUC))+
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed")+
+  theme_bw() +
+  theme(legend.position = c(0.8,0.2))+ xlab("False Postive") +ylab("True Positive")
+```
