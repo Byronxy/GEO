@@ -1,0 +1,37 @@
+if(F){
+  library(corrplot)
+mutation = read.table("figure1c.csv", header = T, sep = ",", encoding = "UTF-8",stringsAsFactors = F)
+colnames(mutation)[1]="Gene1"
+library(reshape2)
+mutation = mutation[c(1:992),c(1:2,6)]
+mutationcast = dcast(mutation, Gene1 ~ Gene2)
+rownames(mutationcast) = mutationcast$Gene1
+mutationcast = mutationcast[,-1]
+mutationcast = apply(mutationcast,2,as.numeric)
+mutationcast = as.matrix(mutationcast)
+# tmp = list()
+# for (i in c(1:nrow(mutationcast))) {
+#   a = mutationcast[i,]
+#   a = a[!is.na(a)]
+#   tmp[[i]] = a
+# }
+# tmp = do.call(rbind,tmp)
+# tmp = as.data.frame(tmp)
+# rownames(tmp) = colnames(mutationcast)
+# tmp = tmp[-32,]
+matrixq = mutation[c(1:992),c(1:2,5)]
+matrixq = dcast(matrixq, Gene1 ~ Gene2)
+rownames(matrixq) = matrixq$Gene1
+matrixq = matrixq[,-1]
+matrixq = apply(matrixq,2,as.numeric)
+matrixq = as.matrix(matrixq)
+rownames(matrixq) = colnames(matrixq)
+save(mutationcast,matrixq,file = "correlationplot.Rdata")
+}
+
+load("correlationplot.Rdata")
+library(RColorBrewer)
+library(corrplot)
+
+corrplot(mutationcast,type = "upper",order="hclust",col=brewer.pal(n=8, name="RdBu"),
+         tl.col="black", tl.cex = 0.8, tl.srt = 90, is.corr = FALSE, diag = F,  p.mat = matrixq, sig.level = c(.001, .05, .1),insig = c("label_sig"), pch.cex = 0.5)
