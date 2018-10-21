@@ -1,0 +1,19 @@
+freqdata = read.table("figure1a.csv", header = T, sep = ",", encoding = "UTF-8",stringsAsFactors = F)
+colnames(freqdata)[1]="symbol"
+library(dplyr)
+library(ggplot2)
+library(lemon)
+library(ggpubr)
+freqdata = freqdata %>% arrange(desc(freq)) %>% arrange(cohort)
+freqdata$symbol = factor(freqdata$symbol,levels=unique(freqdata$symbol))
+ggplot(freqdata, aes(x=symbol,y=freq))+
+  geom_bar(stat = "identity")+
+  facet_rep_wrap(~cohort, ncol = 1,scales="fixed",
+                 repeat.tick.labels =F, strip.position = "top")+ #require lemon package 
+  theme_classic() + 
+  theme(strip.background = element_rect(colour="white", fill="white"),
+        strip.text=element_text(hjust=0,size = 14))+ #adjust facet labels
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 14, 
+                                   face = "italic"),
+        axis.title.y = element_text(size = 15,face = "bold"))+
+  labs(y="Number of patients/total patients", x = "")
